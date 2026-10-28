@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+import gi
+import subprocess
+import sys
+import json
+import threading
+import shutil
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib, Gio
+
+APP_ID = 'io.github.martino.UpdateManager'
+
+def check_updates():
+    result = subprocess.run(['/usr/bin/debian-check-updates'], capture_output=True, text=True)
+    try:
+        return json.loads(result.stdout)
+    except:
+        return {"total": 0, "apt": 0, "flatpak": 0}
+
+class UpdateWindow(Adw.ApplicationWindow):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_title('Aggiornamenti di Sistema')
+        self.set_default_size(500, 400)
+
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        
+        self.toast_overlay = Adw.ToastOverlay()
+        self.toast_overlay.set_child(toolbar_view)
+
+        page = Adw.PreferencesPage()
+        toolbar_view.set_content(page)
+
+        # Gruppo Stato
+        self.status_group = Adw.PreferencesGroup(title='Stato del Sistema')
+        page.add(self.status_group)
+
+        self.status_row = Adw.ActionRow(title='Controllo in corso...')
+        self.spinner = Gtk.Spinner()
+        self.status_row.add_suffix(self.spinner)
+        self.spinner.start()
+        self.status_group.add(self.status_row)
+
+        # Gruppo Azione
+        action_group = Adw.PreferencesGroup()
+        page.add(action_group)
+
+        self.btn_update = Gtk.Button(label='Aggiorna Tutto')
+        self.btn_update.add_css_class('suggested-action')
+        self.btn_update.add_css_class('pill')
+        self.btn_update.set_margin_top(12)
+        self.btn_update.set_margin_bottom(12)
+        self.btn_update.set_sensitive(False)
+        self.btn_update.connect('clicked', self.on_update_clicked)
+
+        btn_row = Adw.PreferencesRow()
+        btn_row.set_child(self.btn_update)
+        action_group.add(btn_row)
+
+        self.set_content(self.toast_overlay)
+        
+        # Controlla all'avvio
+        threading.Thread(target=self.do_check, daemon=True).start()
+
+    def do_check(self):
+        data = check_updates()
+        GLib.idle_add(self.update_ui, data)
+
+    def update_ui(self, data):
+        self.spinner.stop()
+        self.spinner.set_visible(False)
+        
+        if data['total'] > 0:
+            self.status_row.set_title(f"<b>{data['total']} aggiornamenti disponibili</b>")
+            self.status_row.set_subtitle(f"APT: {data['apt']} | Flatpak: {data['flatpak']}")
+            self.btn_update.set_sensitive(True)
+        else:
+            self.status_row.set_title("<b>Sistema aggiornato</b>")
+            self.status_row.set_subtitle("Nessun aggiornamento trovato.")
+            self.btn_update.set_sensitive(False)
+        return False
+
+    def on_update_clicked(self, btn):
+        self.btn_update.set_sensitive(False)
+        self.status_row.set_title("Aggiornamento in corso...")
+        self.status_row.set_subtitle("Controlla la finestra del terminale.")
+        self.spinner.set_visible(True)
+        self.spinner.start()
+        
+        threading.Thread(target=self.run_update, daemon=True).start()
+
+    def run_update(self):
+        terminal_cmd = []
+        if shutil.which('ptyxis'):
+            terminal_cmd = ['ptyxis', '--standalone', '--']
+        elif shutil.which('gnome-terminal'):
+            terminal_cmd = ['gnome-terminal', '--']
+        elif shutil.which('konsole'):
+            terminal_cmd = ['konsole', '-e']
+        elif shutil.which('xfce4-terminal'):
+            terminal_cmd = ['xfce4-terminal', '-x']
+        elif shutil.which('xterm'):
+            terminal_cmd = ['xterm', '-e']
+        
+        if not terminal_cmd:
+            GLib.idle_add(self.show_toast, "Errore: Nessun emulatore di terminale trovato.")
+            GLib.idle_add(self.update_finished, 1)
+            return
+
+        cmd = terminal_cmd + ['pkexec', '/usr/bin/debian-update-helper']
+        
+        try:
+            process = subprocess.Popen(cmd)
+            process.wait()
+            GLib.idle_add(self.update_finished, 0)
+        except Exception as e:
+            GLib.idle_add(self.show_toast, f"Errore avvio terminale: {e}")
+            GLib.idle_add(self.update_finished, 1)
+
+    def update_finished(self, code):
+        self.spinner.stop()
+        self.spinner.set_visible(False)
+        if code == 0:
+            self.show_toast("Aggiornamento completato con successo!")
+            threading.Thread(target=self.do_check, daemon=True).start()
+        else:
+            self.show_toast("Errore o annullato dall'utente.")
+            self.status_row.set_title("Aggiornamento fallito o annullato.")
+            self.btn_update.set_sensitive(True)
+
+    def show_toast(self, msg):
+        t = Adw.Toast.new(msg)
+        t.set_timeout(3)
+        self.toast_overlay.add_toast(t)
+
+class UpdateApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
+
+    def do_activate(self):
+        win = self.props.active_window or UpdateWindow(application=self)
+        win.present()
+
+if __name__ == '__main__':
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    sys.exit(UpdateApp().run(sys.argv))

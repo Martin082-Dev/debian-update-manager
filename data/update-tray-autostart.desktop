@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Update Manager Tray
+Comment=Icona di sistema per gli aggiornamenti
+Exec=debian-update-tray
+Icon=software-update-available
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

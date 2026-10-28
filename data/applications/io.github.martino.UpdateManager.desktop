@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Aggiornamenti di Sistema
+Comment=Gestisci gli aggiornamenti APT e Flatpak
+Exec=debian-update-gui
+Icon=software-update-available
+Terminal=false
+Categories=System;Settings;
