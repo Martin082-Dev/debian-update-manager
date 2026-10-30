@@ -16,5 +16,4 @@ else
 fi
 
 echo -e "\n=== AGGIORNAMENTO COMPLETATO ==="
-read -p "Premi INVIO per chiudere questa finestra..." dummy
 exit 0

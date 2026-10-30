@@ -17,6 +17,11 @@ CHECK_INTERVAL = 3600  # Controlla ogni ora
 
 class TrayApp:
     def __init__(self):
+        # --- AGGIUNTA PER AGGIORNAMENTO AUTOMATICO ---
+        import signal
+        signal.signal(signal.SIGUSR1, lambda sig, frame: threading.Thread(target=self.check_updates, daemon=True).start())
+        # ---------------------------------------------
+
         self.indicator = AppIndicator.Indicator.new(
             'update-manager-tray',
             ICON_GREEN,

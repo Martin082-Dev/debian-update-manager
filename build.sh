@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 PKG_NAME="debian-update-manager"
-VERSION="1.1.3"
+VERSION="1.2.1"
 ARCH="all"
 BUILD_DIR="build"
 DIST_DIR="dist"

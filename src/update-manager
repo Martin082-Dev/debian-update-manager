@@ -110,11 +110,18 @@ class UpdateWindow(Adw.ApplicationWindow):
             GLib.idle_add(self.update_finished, 1)
             return
 
-        cmd = terminal_cmd + ['pkexec', '/usr/bin/debian-update-helper']
+        # Esegue pkexec, poi stampa il messaggio e aspetta l'INVIO
+        bash_script = 'pkexec /usr/bin/debian-update-helper; echo -e "\\n\\n=== AGGIORNAMENTO TERMINATO ==="; read -p "Premi INVIO per chiudere questa finestra..."'
+        cmd = terminal_cmd + ['bash', '-c', bash_script]
         
         try:
             process = subprocess.Popen(cmd)
-            process.wait()
+            process.wait()  # Aspetta che il terminale venga chiuso (o che premi Invio)
+            
+            # Appena il terminale si chiude, sveglia la tray per farla tornare verde
+            subprocess.run(['pkill', '-USR1', '-f', 'debian-update-tray'])
+            
+            # Aggiorna l'interfaccia della GUI
             GLib.idle_add(self.update_finished, 0)
         except Exception as e:
             GLib.idle_add(self.show_toast, f"Errore avvio terminale: {e}")
