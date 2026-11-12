@@ -5,6 +5,8 @@ import sys
 import json
 import threading
 import shutil
+import os
+import time
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
@@ -13,20 +15,29 @@ from gi.repository import Gtk, Adw, GLib, Gio
 APP_ID = 'io.github.martino.UpdateManager'
 
 def check_updates():
-    result = subprocess.run(['/usr/bin/debian-check-updates'], capture_output=True, text=True)
     try:
+        result = subprocess.run(['/usr/bin/debian-check-updates'], capture_output=True, text=True, timeout=5)
         return json.loads(result.stdout)
-    except:
+    except subprocess.TimeoutExpired:
+        return {"total": -1, "apt": -1, "flatpak": -1}
+    except Exception:
         return {"total": 0, "apt": 0, "flatpak": 0}
 
 class UpdateWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.set_title('Aggiornamenti di Sistema')
-        self.set_default_size(500, 400)
+        self.set_default_size(500, 500)
 
         toolbar_view = Adw.ToolbarView()
-        toolbar_view.add_top_bar(Adw.HeaderBar())
+        header = Adw.HeaderBar()
+        
+        self.refresh_btn = Gtk.Button(icon_name='view-refresh')
+        self.refresh_btn.set_tooltip_text('Controlla ora')
+        self.refresh_btn.connect('clicked', self.on_refresh_clicked)
+        header.pack_end(self.refresh_btn)
+        
+        toolbar_view.add_top_bar(header)
         
         self.toast_overlay = Adw.ToastOverlay()
         self.toast_overlay.set_child(toolbar_view)
@@ -34,7 +45,6 @@ class UpdateWindow(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
         toolbar_view.set_content(page)
 
-        # Gruppo Stato
         self.status_group = Adw.PreferencesGroup(title='Stato del Sistema')
         page.add(self.status_group)
 
@@ -44,7 +54,6 @@ class UpdateWindow(Adw.ApplicationWindow):
         self.spinner.start()
         self.status_group.add(self.status_row)
 
-        # Gruppo Azione
         action_group = Adw.PreferencesGroup()
         page.add(action_group)
 
@@ -54,15 +63,52 @@ class UpdateWindow(Adw.ApplicationWindow):
         self.btn_update.set_margin_top(12)
         self.btn_update.set_margin_bottom(12)
         self.btn_update.set_sensitive(False)
-        self.btn_update.connect('clicked', self.on_update_clicked)
+        self.btn_update.connect('clicked', self.on_update_clicked) # Ora funziona!
 
         btn_row = Adw.PreferencesRow()
         btn_row.set_child(self.btn_update)
         action_group.add(btn_row)
 
+        tools_group = Adw.PreferencesGroup(title='Strumenti')
+        page.add(tools_group)
+
+        row_synaptic = Adw.ActionRow(title='Synaptic', subtitle='Gestione avanzata dei pacchetti')
+        self.btn_synaptic = Gtk.Button(label='Apri')
+        self.btn_synaptic.add_css_class('flat')
+        self.btn_synaptic.set_valign(Gtk.Align.CENTER)
+        self.btn_synaptic.connect('clicked', self.on_open_synaptic)
+        row_synaptic.add_suffix(self.btn_synaptic)
+        row_synaptic.set_activatable_widget(self.btn_synaptic)
+        tools_group.add(row_synaptic)
+
+        row_software = Adw.ActionRow(title='Software Manager', subtitle='Installa nuove applicazioni')
+        self.btn_software = Gtk.Button(label='Apri')
+        self.btn_software.add_css_class('flat')
+        self.btn_software.set_valign(Gtk.Align.CENTER)
+        self.btn_software.connect('clicked', self.on_open_software)
+        row_software.add_suffix(self.btn_software)
+        row_software.set_activatable_widget(self.btn_software)
+        tools_group.add(row_software)
+
         self.set_content(self.toast_overlay)
+        threading.Thread(target=self.do_check, daemon=True).start()
+
+    def set_ui_state(self, busy):
+        self.refresh_btn.set_sensitive(not busy)
+        self.btn_update.set_sensitive(not busy)
+        self.btn_synaptic.set_sensitive(not busy)
+        self.btn_software.set_sensitive(not busy)
         
-        # Controlla all'avvio
+        if busy:
+            self.spinner.set_visible(True)
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+            self.spinner.set_visible(False)
+
+    def on_refresh_clicked(self, btn):
+        self.set_ui_state(True)
+        self.status_row.set_title('Controllo in corso...')
         threading.Thread(target=self.do_check, daemon=True).start()
 
     def do_check(self):
@@ -70,9 +116,14 @@ class UpdateWindow(Adw.ApplicationWindow):
         GLib.idle_add(self.update_ui, data)
 
     def update_ui(self, data):
-        self.spinner.stop()
-        self.spinner.set_visible(False)
+        self.set_ui_state(False)
         
+        if data.get('total') == -1:
+            self.status_row.set_title("<b>Sistema occupato</b>")
+            self.status_row.set_subtitle("Un altro processo di apt è in corso. Riprova tra poco.")
+            self.btn_update.set_sensitive(False)
+            return False
+
         if data['total'] > 0:
             self.status_row.set_title(f"<b>{data['total']} aggiornamenti disponibili</b>")
             self.status_row.set_subtitle(f"APT: {data['apt']} | Flatpak: {data['flatpak']}")
@@ -83,60 +134,112 @@ class UpdateWindow(Adw.ApplicationWindow):
             self.btn_update.set_sensitive(False)
         return False
 
+    def on_open_synaptic(self, btn):
+        try:
+            subprocess.Popen(['synaptic-pkexec'])
+        except FileNotFoundError:
+            self.show_toast("Synaptic non è installato sul sistema.")
+
+    def on_open_software(self, btn):
+        try:
+            subprocess.Popen(['gnome-software'])
+        except FileNotFoundError:
+            self.show_toast("GNOME Software non è installato.")
+
+    # QUESTA È LA FUNZIONE CHE MANCAVA!
     def on_update_clicked(self, btn):
-        self.btn_update.set_sensitive(False)
+        self.set_ui_state(True)
         self.status_row.set_title("Aggiornamento in corso...")
         self.status_row.set_subtitle("Controlla la finestra del terminale.")
-        self.spinner.set_visible(True)
-        self.spinner.start()
-        
         threading.Thread(target=self.run_update, daemon=True).start()
 
     def run_update(self):
         terminal_cmd = []
-        if shutil.which('ptyxis'):
-            terminal_cmd = ['ptyxis', '--standalone', '--']
-        elif shutil.which('gnome-terminal'):
-            terminal_cmd = ['gnome-terminal', '--']
-        elif shutil.which('konsole'):
-            terminal_cmd = ['konsole', '-e']
-        elif shutil.which('xfce4-terminal'):
-            terminal_cmd = ['xfce4-terminal', '-x']
-        elif shutil.which('xterm'):
-            terminal_cmd = ['xterm', '-e']
         
+        try:
+            res = subprocess.run(['gsettings', 'get', 'org.gnome.desktop.default-applications.terminal', 'exec'], capture_output=True, text=True)
+            if res.returncode == 0:
+                term_name = res.stdout.strip().replace("'", "").replace('"', '')
+                if term_name and shutil.which(term_name):
+                    terminal_cmd = [term_name]
+        except FileNotFoundError:
+            pass
+
+        if not terminal_cmd:
+            term_env = os.environ.get('TERMINAL')
+            if term_env and shutil.which(term_env):
+                terminal_cmd = [term_env]
+
+        if not terminal_cmd and shutil.which('gnome-terminal'):
+            terminal_cmd = ['gnome-terminal']
+            
+        if not terminal_cmd and shutil.which('konsole'):
+            terminal_cmd = ['konsole']
+            
         if not terminal_cmd:
             GLib.idle_add(self.show_toast, "Errore: Nessun emulatore di terminale trovato.")
             GLib.idle_add(self.update_finished, 1)
             return
 
-        # Esegue pkexec, poi stampa il messaggio e aspetta l'INVIO
-        bash_script = 'pkexec /usr/bin/debian-update-helper; echo -e "\\n\\n=== AGGIORNAMENTO TERMINATO ==="; read -p "Premi INVIO per chiudere questa finestra..."'
-        cmd = terminal_cmd + ['bash', '-c', bash_script]
+        lock_file = "/tmp/debian-update-manager.lock"
+        success_file = "/tmp/debian-update-manager.success"
         
+        for f in [lock_file, success_file]:
+            if os.path.exists(f):
+                os.remove(f)
+
+        with open(lock_file, 'w') as f:
+            f.write("running")
+
+        bash_script = (
+            'trap "rm -f /tmp/debian-update-manager.lock" EXIT SIGHUP SIGINT SIGTERM; '
+            'pkexec /usr/bin/debian-update-helper; '
+            'echo -e "\\n\\n=== AGGIORNAMENTO TERMINATO ==="; '
+            'read -p "Premi INVIO per chiudere questa finestra..."; '
+            'touch /tmp/debian-update-manager.success'
+        )
+        
+        if 'gnome-terminal' in terminal_cmd[0]:
+            cmd = ['gnome-terminal', '--title=Debian Update Manager', '--', 'bash', '-c', bash_script]
+        elif 'konsole' in terminal_cmd[0]:
+            cmd = ['konsole', '-e', 'bash', '-c', bash_script]
+        else:
+            cmd = terminal_cmd + ['bash', '-c', bash_script]
+
+        subprocess.run(['/usr/bin/pkill', '-USR2', '-f', 'debian-update-tray'])
+
         try:
-            process = subprocess.Popen(cmd)
-            process.wait()  # Aspetta che il terminale venga chiuso (o che premi Invio)
+            subprocess.Popen(cmd)
             
-            # Appena il terminale si chiude, sveglia la tray per farla tornare verde
-            subprocess.run(['pkill', '-USR1', '-f', 'debian-update-tray'])
+            start_time = time.time()
+            while os.path.exists(lock_file):
+                time.sleep(0.2)
+                if time.time() - start_time > 600: 
+                    subprocess.run(['rm', '-f', lock_file])
+                    break
             
-            # Aggiorna l'interfaccia della GUI
-            GLib.idle_add(self.update_finished, 0)
+            if os.path.exists(success_file):
+                os.remove(success_file)
+                subprocess.run(['/usr/bin/pkill', '-USR1', '-f', 'debian-update-tray'])
+                GLib.idle_add(self.update_finished, 0)
+            else:
+                subprocess.run(['/usr/bin/pkill', '-USR1', '-f', 'debian-update-tray'])
+                GLib.idle_add(self.show_toast, "Aggiornamento interrotto.")
+                GLib.idle_add(self.update_finished, 1)
+                
         except Exception as e:
             GLib.idle_add(self.show_toast, f"Errore avvio terminale: {e}")
             GLib.idle_add(self.update_finished, 1)
 
     def update_finished(self, code):
-        self.spinner.stop()
-        self.spinner.set_visible(False)
+        self.set_ui_state(False)
+        
         if code == 0:
             self.show_toast("Aggiornamento completato con successo!")
-            threading.Thread(target=self.do_check, daemon=True).start()
         else:
-            self.show_toast("Errore o annullato dall'utente.")
-            self.status_row.set_title("Aggiornamento fallito o annullato.")
-            self.btn_update.set_sensitive(True)
+            self.status_row.set_title("Aggiornamento interrotto.")
+        
+        threading.Thread(target=self.do_check, daemon=True).start()
 
     def show_toast(self, msg):
         t = Adw.Toast.new(msg)

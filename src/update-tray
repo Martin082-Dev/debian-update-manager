@@ -4,6 +4,7 @@ import subprocess
 import json
 import threading
 import time
+import signal
 
 gi.require_version('Gtk', '3.0')
 gi.require_version('AyatanaAppIndicator3', '0.1')
@@ -13,14 +14,16 @@ from gi.repository import AyatanaAppIndicator3 as AppIndicator
 ICON_RED = 'software-update-available'
 ICON_GREEN = 'software-update-urgent' 
 ICON_CHECKING = 'view-refresh'
+ICON_UPDATING = 'system-run' 
 CHECK_INTERVAL = 3600  # Controlla ogni ora
 
 class TrayApp:
     def __init__(self):
-        # --- AGGIUNTA PER AGGIORNAMENTO AUTOMATICO ---
-        import signal
-        signal.signal(signal.SIGUSR1, lambda sig, frame: threading.Thread(target=self.check_updates, daemon=True).start())
-        # ---------------------------------------------
+        self.is_updating = False
+        
+        # Ascolta i segnali
+        signal.signal(signal.SIGUSR1, self.on_update_finished)
+        signal.signal(signal.SIGUSR2, self.on_update_started)
 
         self.indicator = AppIndicator.Indicator.new(
             'update-manager-tray',
@@ -39,23 +42,22 @@ class TrayApp:
         
         self.menu.append(Gtk.SeparatorMenuItem())
 
-        # Voci di azione
-        item_check = Gtk.MenuItem(label='Controlla ora')
-        item_check.connect('activate', self.on_check)
-        self.menu.append(item_check)
+        # Voci di azione (Ora sono self.* per poterle disattivare)
+        self.item_check = Gtk.MenuItem(label='Controlla ora')
+        self.item_check.connect('activate', self.on_check)
+        self.menu.append(self.item_check)
 
-        item_open = Gtk.MenuItem(label='Apri Aggiornamenti')
-        item_open.connect('activate', self.on_open)
-        self.menu.append(item_open)
+        self.item_open = Gtk.MenuItem(label='Apri Aggiornamenti')
+        self.item_open.connect('activate', self.on_open)
+        self.menu.append(self.item_open)
 
-        # --- LA VOCE PER SYNAPTIC ---
-        item_synaptic = Gtk.MenuItem(label='Gestione Pacchetti Synaptic')
-        item_synaptic.connect('activate', self.on_open_synaptic)
-        self.menu.append(item_synaptic)
-        # --- ECCO LA VOCE PER GNOME-SOFTWARE ---
-        item_software = Gtk.MenuItem(label='Software Manager')
-        item_software.connect('activate', self.on_open_software)
-        self.menu.append(item_software)
+        self.item_synaptic = Gtk.MenuItem(label='Gestione Pacchetti Synaptic')
+        self.item_synaptic.connect('activate', self.on_open_synaptic)
+        self.menu.append(self.item_synaptic)
+        
+        self.item_software = Gtk.MenuItem(label='Software Manager')
+        self.item_software.connect('activate', self.on_open_software)
+        self.menu.append(self.item_software)
 
         self.menu.append(Gtk.SeparatorMenuItem())
 
@@ -66,11 +68,33 @@ class TrayApp:
         self.menu.show_all()
         self.indicator.set_menu(self.menu)
 
-        # Controllo iniziale e timer
         self.check_updates()
         GLib.timeout_add_seconds(CHECK_INTERVAL, self.check_updates)
 
+    def on_update_started(self, sig, frame):
+        GLib.idle_add(self.set_updating_state, True)
+
+    def on_update_finished(self, sig, frame):
+        GLib.idle_add(self.set_updating_state, False)
+
+    def set_updating_state(self, updating):
+        self.is_updating = updating
+        
+        # Disattiva o riattiva i pulsanti del menu
+        self.item_check.set_sensitive(not updating)
+        self.item_open.set_sensitive(not updating)
+        self.item_synaptic.set_sensitive(not updating)
+        self.item_software.set_sensitive(not updating)
+
+        if self.is_updating:
+            self.indicator.set_icon_full(ICON_UPDATING, 'Aggiornamento in corso...')
+            self.status_item.set_label('Aggiornamento in corso...')
+        else:
+            threading.Thread(target=self.check_updates, daemon=True).start()
+
     def on_check(self, _):
+        if getattr(self, 'is_updating', False):
+            return
         self.status_item.set_label('Controllo in corso...')
         self.indicator.set_icon_full(ICON_CHECKING, 'Controllo in corso...')
         threading.Thread(target=self.check_updates, daemon=True).start()
@@ -83,15 +107,19 @@ class TrayApp:
             subprocess.Popen(['synaptic-pkexec'])
         except FileNotFoundError:
             subprocess.Popen(['notify-send', '-a', 'Update Manager', '-i', 'dialog-error',
-                              'Synaptic non trovato', 'Il gestore dei pacchetti Synaptic non è installato sul sistema.'])
+                              'Synaptic non trovato', 'Il gestore dei pacchetti Synaptic non è installato.'])
+
     def on_open_software(self, _):
         try:
             subprocess.Popen(['gnome-software'])
         except FileNotFoundError:
             subprocess.Popen(['notify-send', '-a', 'Update Manager', '-i', 'dialog-error',
-                              'Software Manager non trovato', 'GNOME Software non è installato sul sistema.'])
+                              'Software Manager non trovato', 'GNOME Software non è installato.'])
+
     def check_updates(self):
-        GLib.idle_add(self.indicator.set_icon_full, ICON_CHECKING, 'Controllo in corso...')
+        if getattr(self, 'is_updating', False):
+            return True 
+        
         result = subprocess.run(['/usr/bin/debian-check-updates'], capture_output=True, text=True)
         try:
             data = json.loads(result.stdout)
@@ -102,6 +130,9 @@ class TrayApp:
         return True 
 
     def update_ui(self, data):
+        if getattr(self, 'is_updating', False):
+            return False
+            
         if data['total'] > 0:
             self.indicator.set_icon_full(ICON_RED, 'Aggiornamenti disponibili')
             self.status_item.set_label(f"{data['total']} aggiornamenti disponibili")
@@ -113,7 +144,6 @@ class TrayApp:
         return False
 
 if __name__ == '__main__':
-    import signal
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     TrayApp()
     Gtk.main()
